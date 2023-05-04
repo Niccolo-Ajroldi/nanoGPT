@@ -32,7 +32,7 @@ from model import GPTConfig, GPT
 # -----------------------------------------------------------------------------
 # default config values designed to train a gpt2 (124M) on OpenWebText
 # I/O
-out_dir = 'out/out'
+out_dir = 'out'
 eval_interval = 2000
 log_interval = 1
 eval_iters = 200
@@ -43,7 +43,6 @@ init_from = 'scratch' # 'scratch' or 'resume' or 'gpt2*'
 wandb_log = False # disabled by default
 wandb_project = 'owt'
 wandb_run_name = 'gpt2' # 'run' + str(time.time())
-wandb_id = None # (nico)
 # data
 dataset = 'openwebtext'
 gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
@@ -71,19 +70,8 @@ min_lr = 6e-5 # minimum learning rate, should be ~= learning_rate/10 per Chinchi
 backend = 'nccl' # 'nccl', 'gloo', etc.
 # system
 device = 'cuda' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
-# dtype = 'bfloat16' # 'float32', 'bfloat16', or 'float16', the latter will auto implement a GradScaler
 dtype = 'float16' # 'float32', 'bfloat16', or 'float16', the latter will auto implement a GradScaler
 compile = True # use PyTorch 2.0 to compile the model to be faster
-
-# (nico)
-adapt_period = 100
-adapt_alpha = "dot"
-alpha_factor = 2.0
-conf_level = .9
-max_lr = 1e5
-stopping = "first"
-increase_crit = "great_equal"
-
 # -----------------------------------------------------------------------------
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
 exec(open('configurator.py').read()) # overrides from command line or config file
@@ -91,20 +79,17 @@ config = {k: globals()[k] for k in config_keys} # will be useful for logging
 # -----------------------------------------------------------------------------
 
 # (nico) ADD SPECIFICATIONS TO NAME
-wandb_run_name = f"{wandb_run_name}-{dtype}-{learning_rate}-{adapt_period}-{alpha_factor}-{adapt_alpha}-{conf_level}"
-out_dir = f"{out_dir}-{dtype}-{learning_rate}-{adapt_period}-{alpha_factor}-{adapt_alpha}-{conf_level}"
+wandb_run_name = f"{wandb_run_name}-{dtype}-{learning_rate}"
+out_dir = f"{out_dir}-{dtype}-{learning_rate}-"
 
 # various inits, derived attributes, I/O setup
 ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run?
-# (nico) 
-print(f" ==> Is this DDP: {ddp}")
 if ddp:
     init_process_group(backend=backend)
     ddp_rank = int(os.environ['RANK'])
     ddp_local_rank = int(os.environ['LOCAL_RANK'])
     ddp_world_size = int(os.environ['WORLD_SIZE'])
     device = f'cuda:{ddp_local_rank}'
-    print(f"device={device}")
     torch.cuda.set_device(device)
     master_process = ddp_rank == 0 # this process will do logging, checkpointing etc.
     seed_offset = ddp_rank # each process gets a different seed
@@ -215,20 +200,6 @@ if init_from == 'resume':
     optimizer.load_state_dict(checkpoint['optimizer'])
 checkpoint = None # free up memory
 
-# (nico): HGWarmup init
-from hgwarmup import HGWarmup
-hgwarmup = HGWarmup(
-    optimizer,
-    lr = learning_rate,
-    adapt_period = adapt_period,
-    adapt_alpha = adapt_alpha,
-    alpha_factor = alpha_factor,
-    conf_level = conf_level,
-    max_lr = max_lr,
-    stopping = stopping,
-    increase_crit = increase_crit,
-)
-
 # compile the model
 if compile:
     print("compiling the model... (takes a ~minute)")
@@ -256,24 +227,10 @@ def estimate_loss():
     return out
 
 # learning rate decay scheduler (cosine with warmup)
-# def get_lr(it):
-#     # 1) linear warmup for warmup_iters steps
-#     if it < warmup_iters:
-#         return learning_rate * it / warmup_iters
-#     # 2) if it > lr_decay_iters, return min learning rate
-#     if it > lr_decay_iters:
-#         return min_lr
-#     # 3) in between, use cosine decay down to min learning rate
-#     decay_ratio = (it - warmup_iters) / (lr_decay_iters - warmup_iters)
-#     assert 0 <= decay_ratio <= 1
-#     coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff ranges 0..1
-#     return min_lr + coeff * (learning_rate - min_lr)
-
-# (nico):
-def get_lr(it, hgwarmup):
-    # 1) warmup period
-    if not hgwarmup.warmup_finished():
-        return hgwarmup.get_lr()
+def get_lr(it):
+    # 1) linear warmup for warmup_iters steps
+    if it < warmup_iters:
+        return learning_rate * it / warmup_iters
     # 2) if it > lr_decay_iters, return min learning rate
     if it > lr_decay_iters:
         return min_lr
@@ -286,15 +243,7 @@ def get_lr(it, hgwarmup):
 # logging
 if wandb_log and master_process:
     import wandb
-    # wandb.init(project=wandb_project, name=wandb_run_name, config=config)
-    wandb.init( 
-        entity = 'ajnico',
-        project = wandb_project, 
-        name = wandb_run_name, 
-        id = wandb_id,
-        resume = "allow",
-        config = config
-    )
+    wandb.init(project=wandb_project, name=wandb_run_name, config=config)
 
 # training loop
 X, Y = get_batch('train') # fetch the very first batch
@@ -304,14 +253,10 @@ raw_model = model.module if ddp else model # unwrap DDP container if needed
 running_mfu = -1.0
 while True:
 
-    # (nico): MODIFIED
-    lr = get_lr(iter_num, hgwarmup)
-    if hgwarmup.warmup_finished(): # otherwise hgwarmup will take care of it!
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = lr
-    
-    # (nico): subsitute with this
-    # lr = hgwarmup.get_lr()
+    # determine and set the learning rate for this iteration
+    lr = get_lr(iter_num) if decay_lr else learning_rate
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
 
     # evaluate the loss on train/val sets and write checkpoints
     if iter_num % eval_interval == 0 and master_process:
@@ -324,8 +269,7 @@ while True:
                 "val/loss": losses['val'],
                 "lr": lr,
                 "mfu": running_mfu*100, # convert to percentage
-            # ) (nico): SKIP
-            }, step=iter_num+1) # (nico): substituted
+            })
         if losses['val'] < best_val_loss or always_save_checkpoint:
             best_val_loss = losses['val']
             if iter_num > 0:
@@ -358,11 +302,9 @@ while True:
         X, Y = get_batch('train')
         # backward pass, with gradient scaling if training in fp16
         scaler.scale(loss).backward()
-    # (nico)
-    scaler.unscale_(optimizer) # hgwarmup works with unscald gradients!
-    hgwarmup.step()
     # clip the gradient
     if grad_clip != 0.0:
+        scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
     # step the optimizer and scaler if training in fp16
     scaler.step(optimizer)

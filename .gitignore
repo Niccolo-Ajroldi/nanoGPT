@@ -2,3 +2,13 @@
 .ipynb_checkpoints/
 __pycache__/
 *.pyc
+wandb/
+*.log
+*.out
+*.pth
+*.tar
+out/
+*.wandb
+core/
+core
+data/

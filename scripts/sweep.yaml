@@ -1,0 +1,44 @@
+name: nanoGPT-2
+project: owt
+program: train.py
+method: grid
+parameters:
+  learning_rate:
+    values:
+      - 1.0e-10
+  adapt_period:
+    values:
+      - 300
+      # - 100
+      # - 200
+  alpha_factor:
+    values:
+      - 1.5
+      # - 2.0
+      # - 5.0
+  adapt_alpha:
+    values:
+      - "dot"
+      # - "cos"
+  increase_crit:
+    values:
+      - "great_equal"
+  conf_level:
+    values:
+      - .9
+      # - .9999
+  dtype:
+    values:
+      - "float16"
+      # - "float32"
+  project:
+    values:
+      - *project
+command:
+  - torchrun
+  - "--standalone"
+  - "--nproc_per_node=8"
+  - ${program}
+  - config/train_gpt2.py
+  - "--max_iters=10000"
+  - ${args}
