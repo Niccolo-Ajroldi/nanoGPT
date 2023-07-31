@@ -1,5 +1,5 @@
-name: nanoGPT-2
-project: owt
+name: GPT_seed
+project: &project LR_warmup
 program: train.py
 method: grid
 parameters:
@@ -8,9 +8,12 @@ parameters:
       - 1.0e-10
   adapt_period:
     values:
-      - 300
+      # - 25
+      # - 50
       # - 100
       # - 200
+      - 500
+      - 1000
   alpha_factor:
     values:
       - 1.5
@@ -29,11 +32,15 @@ parameters:
       # - .9999
   dtype:
     values:
-      - "float16"
-      # - "float32"
-  project:
+      # - "float16"
+      - "float32"
+  seed_nico:
     values:
-      - *project
+      - 100
+      - 200
+      - 300
+      - 400
+      - 500
 command:
   - torchrun
   - "--standalone"

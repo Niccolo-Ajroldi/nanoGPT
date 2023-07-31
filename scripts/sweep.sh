@@ -12,7 +12,7 @@
 #SBATCH --constraint=volta32gb
 #SBATCH --signal=USR1@60
 
-#SBATCH --job-name=sweep1
-#SBATCH --output=out/sweep3-%a.log
+#SBATCH --job-name=GPT_seed_large_period
+#SBATCH --output=out/GPT_seed_large_period-%a.log
 
-wandb agent ajnico/owt/h2psryn5
+wandb agent ajnico/LR_warmup/z556n6qy
